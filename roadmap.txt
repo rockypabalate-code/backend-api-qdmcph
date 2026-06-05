@@ -1,0 +1,14 @@
+Creating a code for authentication 
+Creating user account and can login
+
+User logs in
+    ↓
+Employee submits overtime
+    ↓
+Request is saved as pending
+    ↓
+Manager/Admin/HR approves or rejects
+    ↓
+System saves approval log
+    ↓
+HR/Admin marks approved overtime as paid

@@ -1,0 +1,104 @@
+my-backend/
+│
+├── node_modules/
+├── routes/
+├── controllers/
+├── models/
+├── package.json
+└── index.js
+
+
+📁 backend-code/
+
+    📁 src/ - Main source code lives here
+
+    📁 routes/ - Define URL endpoints (GET, POST…)
+
+    📁 controllers/ - Handle request logic & send response
+
+    📁 services/ - Business logic (reusable)
+
+    📁 models/ -DB schemas (e.g. Mongoose, Sequelize)
+
+    📁 middlewares/ - Auth, error handling, logging…
+
+    📁 config/ -DB connection, env variables
+
+    📁 utils/ -Helpers, formatters, constants
+
+📄 app.js - Express setup, middleware, routes
+
+    📁 tests/ - Unit & integration tests
+
+📄 .env - Secret keys, port, DB URL
+
+📄 server.js - Entry point — start a server
+
+Dependencies:
+express
+xlsx
+nodemon
+
+
+Minimum overtime duration
+
+Example: must be at least 1 hour.
+Maximum overtime per week
+
+Example: maximum 12 hours per week.
+Maximum overtime per month
+
+Example: maximum 40 hours per month.
+Advance filing rule
+
+Example: overtime request must be submitted before overtime starts.
+Late submission rule
+
+Example: requests submitted after the overtime date need special approval.
+Required reason
+
+Example: user must provide a clear reason/project/task.
+Manager approval required
+
+Example: direct manager must approve first.
+HR approval required
+
+Example: HR approves after manager approval.
+Weekend overtime rate
+
+Example: weekend overtime pays 1.5x.
+Holiday overtime rate
+
+Example: holiday overtime pays 2x.
+Night shift overtime rule
+Example: overtime after 10:00 PM has a different rate.
+Break deduction rule
+Example: deduct 30 minutes break if overtime exceeds 4 hours.
+Duplicate request prevention
+Example: same employee cannot submit overlapping overtime times.
+Only active employees can file
+Example: inactive/resigned employees cannot submit overtime.
+Paid status rule
+Example: only approved overtime can be marked as paid.
+
+
+Features:
+
+User registration
+User login with token authentication
+Current user profile endpoint
+Role-based access control: admin, hr, manager, user
+Admin dashboard endpoint
+Department listing and creation
+Employee listing and creation
+Overtime request creation
+Overtime request listing
+Overtime request detail view
+Approve overtime requests
+Reject overtime requests
+Mark overtime as paid
+Approval/action logs for overtime
+Overtime policy listing
+Excel-based data storage using users.xlsx and overtime.xlsx
+Auto-calculation of overtime total hours
+Default starter admin/user accounts and starter overtime policy
