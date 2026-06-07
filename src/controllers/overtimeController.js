@@ -1,36 +1,56 @@
-const overtimeService = require('../services/overtimeExcelService');
+const overtimeService = require('../services/overtimeDbService');
 
 function canViewAll(user) {
   return ['admin', 'hr', 'manager'].includes(user.role);
 }
 
-function listDepartments(req, res) {
-  return res.json({ departments: overtimeService.getDepartments() });
+async function listDepartments(req, res, next) {
+  try {
+    const departments = await overtimeService.getDepartments();
+    return res.json({ departments });
+  } catch (error) {
+    return next(error);
+  }
 }
 
-function createDepartment(req, res) {
+async function createDepartment(req, res, next) {
   const { departmentName } = req.body;
 
   if (!departmentName) {
     return res.status(400).json({ message: 'Department name is required.' });
   }
 
-  const department = overtimeService.createDepartment(req.body);
-  return res.status(201).json({ department });
+  try {
+    const department = await overtimeService.createDepartment(req.body);
+    return res.status(201).json({ department });
+  } catch (error) {
+    return next(error);
+  }
 }
 
-function listEmployees(req, res) {
-  return res.json({ employees: overtimeService.getEmployees() });
+async function listEmployees(req, res, next) {
+  try {
+    const employees = await overtimeService.getEmployees();
+    return res.json({ employees });
+  } catch (error) {
+    return next(error);
+  }
 }
 
-function createEmployee(req, res) {
+async function createEmployee(req, res, next) {
   const { fullName, departmentId, userId, hourlyRate } = req.body;
 
   if (!fullName || !departmentId || !userId || !hourlyRate) {
     return res.status(400).json({ message: 'Full name, department ID, user ID, and hourly rate are required.' });
   }
 
-  const employee = overtimeService.createEmployee(req.body);
+  let employee;
+
+  try {
+    employee = await overtimeService.createEmployee(req.body);
+  } catch (error) {
+    return next(error);
+  }
 
   if (employee.error === 'user_not_found') {
     return res.status(404).json({ message: employee.message });
@@ -46,8 +66,14 @@ function createEmployee(req, res) {
   return res.status(201).json({ employee });
 }
 
-function listOvertimeRequests(req, res) {
-  const requests = overtimeService.getOvertimeRequests();
+async function listOvertimeRequests(req, res, next) {
+  let requests;
+
+  try {
+    requests = await overtimeService.getOvertimeRequests();
+  } catch (error) {
+    return next(error);
+  }
 
   if (canViewAll(req.user)) {
     return res.json({ overtimeRequests: requests });
@@ -58,12 +84,18 @@ function listOvertimeRequests(req, res) {
   });
 }
 
-function createOvertimeRequest(req, res) {
+async function createOvertimeRequest(req, res, next) {
   const { employeeId, date, startTime, endTime, reason } = req.body;
   const requestData = { ...req.body };
 
   if (req.user.role === 'user') {
-    const employee = overtimeService.getEmployeeByUserId(req.user.id);
+    let employee;
+
+    try {
+      employee = await overtimeService.getEmployeeByUserId(req.user.id);
+    } catch (error) {
+      return next(error);
+    }
 
     if (!employee) {
       return res.status(403).json({ message: 'Your account is not linked to an employee profile.' });
@@ -78,16 +110,34 @@ function createOvertimeRequest(req, res) {
     });
   }
 
-  if (!overtimeService.getEmployeeById(requestData.employeeId)) {
+  let employee;
+
+  try {
+    employee = await overtimeService.getEmployeeById(requestData.employeeId);
+  } catch (error) {
+    return next(error);
+  }
+
+  if (!employee) {
     return res.status(404).json({ message: 'Employee ID does not exist.' });
   }
 
-  const overtimeRequest = overtimeService.createOvertimeRequest(requestData, req.user.id);
-  return res.status(201).json({ overtimeRequest });
+  try {
+    const overtimeRequest = await overtimeService.createOvertimeRequest(requestData, req.user.id);
+    return res.status(201).json({ overtimeRequest });
+  } catch (error) {
+    return next(error);
+  }
 }
 
-function getOvertimeRequest(req, res) {
-  const overtimeRequest = overtimeService.getOvertimeRequest(req.params.overtimeId);
+async function getOvertimeRequest(req, res, next) {
+  let overtimeRequest;
+
+  try {
+    overtimeRequest = await overtimeService.getOvertimeRequest(req.params.overtimeId);
+  } catch (error) {
+    return next(error);
+  }
 
   if (!overtimeRequest) {
     return res.status(404).json({ message: 'Overtime request not found.' });
@@ -97,19 +147,27 @@ function getOvertimeRequest(req, res) {
     return res.status(403).json({ message: 'You do not have permission to access this request.' });
   }
 
-  return res.json({
-    overtimeRequest,
-    approvalLogs: overtimeService.getApprovalLogs(req.params.overtimeId),
-  });
+  try {
+    const approvalLogs = await overtimeService.getApprovalLogs(req.params.overtimeId);
+    return res.json({ overtimeRequest, approvalLogs });
+  } catch (error) {
+    return next(error);
+  }
 }
 
-function approveOvertimeRequest(req, res) {
-  const overtimeRequest = overtimeService.updateOvertimeStatus(
-    req.params.overtimeId,
-    'approved',
-    req.user.id,
-    req.body.remarks
-  );
+async function approveOvertimeRequest(req, res, next) {
+  let overtimeRequest;
+
+  try {
+    overtimeRequest = await overtimeService.updateOvertimeStatus(
+      req.params.overtimeId,
+      'approved',
+      req.user.id,
+      req.body.remarks
+    );
+  } catch (error) {
+    return next(error);
+  }
 
   if (!overtimeRequest) {
     return res.status(404).json({ message: 'Overtime request not found.' });
@@ -122,13 +180,19 @@ function approveOvertimeRequest(req, res) {
   return res.json({ overtimeRequest });
 }
 
-function rejectOvertimeRequest(req, res) {
-  const overtimeRequest = overtimeService.updateOvertimeStatus(
-    req.params.overtimeId,
-    'rejected',
-    req.user.id,
-    req.body.remarks
-  );
+async function rejectOvertimeRequest(req, res, next) {
+  let overtimeRequest;
+
+  try {
+    overtimeRequest = await overtimeService.updateOvertimeStatus(
+      req.params.overtimeId,
+      'rejected',
+      req.user.id,
+      req.body.remarks
+    );
+  } catch (error) {
+    return next(error);
+  }
 
   if (!overtimeRequest) {
     return res.status(404).json({ message: 'Overtime request not found.' });
@@ -141,13 +205,19 @@ function rejectOvertimeRequest(req, res) {
   return res.json({ overtimeRequest });
 }
 
-function markOvertimeAsPaid(req, res) {
-  const overtimeRequest = overtimeService.updateOvertimeStatus(
-    req.params.overtimeId,
-    'paid',
-    req.user.id,
-    req.body.remarks
-  );
+async function markOvertimeAsPaid(req, res, next) {
+  let overtimeRequest;
+
+  try {
+    overtimeRequest = await overtimeService.updateOvertimeStatus(
+      req.params.overtimeId,
+      'paid',
+      req.user.id,
+      req.body.remarks
+    );
+  } catch (error) {
+    return next(error);
+  }
 
   if (!overtimeRequest) {
     return res.status(404).json({ message: 'Overtime request not found.' });
@@ -160,8 +230,13 @@ function markOvertimeAsPaid(req, res) {
   return res.json({ overtimeRequest });
 }
 
-function listPolicies(req, res) {
-  return res.json({ policies: overtimeService.getPolicies() });
+async function listPolicies(req, res, next) {
+  try {
+    const policies = await overtimeService.getPolicies();
+    return res.json({ policies });
+  } catch (error) {
+    return next(error);
+  }
 }
 
 module.exports = {

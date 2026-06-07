@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { createPasswordHash, tokenExpiresInSeconds, tokenSecret } = require('../config/auth');
-const overtimeExcelService = require('./overtimeExcelService');
-const userExcelService = require('./userExcelService');
+const overtimeDbService = require('./overtimeDbService');
+const userDbService = require('./userDbService');
 
 function base64UrlEncode(value) {
   return Buffer.from(JSON.stringify(value)).toString('base64url');
@@ -46,7 +46,7 @@ function verifyPassword(password, storedPasswordHash) {
   return secureCompare(passwordHash, storedHash);
 }
 
-function verifyToken(token) {
+async function verifyToken(token) {
   if (!token) {
     return null;
   }
@@ -70,31 +70,30 @@ function verifyToken(token) {
     return null;
   }
 
-  const user = userExcelService.getUsers().find((existingUser) => existingUser.id === decodedPayload.sub) || null;
+  const user = await userDbService.getUserById(decodedPayload.sub);
 
-  if (!user || !canAccessAccount(user)) {
+  if (!user || !await canAccessAccount(user)) {
     return null;
   }
 
   return user;
 }
 
-function canAccessAccount(user) {
+async function canAccessAccount(user) {
   if (user.status !== 'active') {
     return false;
   }
 
   if (user.role === 'user') {
-    return Boolean(overtimeExcelService.getEmployeeByUserId(user.id));
+    return Boolean(await overtimeDbService.getEmployeeByUserId(user.id));
   }
 
   return true;
 }
 
-function login(email, password) {
+async function login(email, password) {
   const normalizedEmail = String(email || '').toLowerCase().trim();
-  const users = userExcelService.getUsers();
-  const user = users.find((existingUser) => existingUser.email === normalizedEmail);
+  const user = await userDbService.getUserByEmail(normalizedEmail);
 
   if (!user || !verifyPassword(String(password || ''), user.passwordHash)) {
     return {
@@ -103,7 +102,7 @@ function login(email, password) {
     };
   }
 
-  if (!canAccessAccount(user)) {
+  if (!await canAccessAccount(user)) {
     return {
       error: 'pending_employee_verification',
       message: 'Your account is pending employee verification.',
@@ -116,8 +115,8 @@ function login(email, password) {
   };
 }
 
-function register({ name, email, password }) {
-  const user = userExcelService.createUser({ name, email, password });
+async function register({ name, email, password }) {
+  const user = await userDbService.createUser({ name, email, password });
 
   if (!user) {
     return null;
