@@ -1,6 +1,6 @@
 const authService = require('../services/authService');
 
-function authenticate(req, res, next) {
+async function authenticate(req, res, next) {
   const authorization = req.headers.authorization || '';
   const [scheme, token] = authorization.split(' ');
 
@@ -8,7 +8,13 @@ function authenticate(req, res, next) {
     return res.status(401).json({ message: 'Authentication token is required.' });
   }
 
-  const user = authService.verifyToken(token);
+  let user;
+
+  try {
+    user = await authService.verifyToken(token);
+  } catch (error) {
+    return next(error);
+  }
 
   if (!user) {
     return res.status(401).json({ message: 'Invalid or expired authentication token.' });
