@@ -33,18 +33,18 @@ async function login(req, res, next) {
 }
 
 async function register(req, res, next) {
-  const { name, email, password } = req.body;
+  const { firstName, middleName, lastName, name, email, password } = req.body;
 
-  if (!name || !email || !password) {
+  if ((!firstName && !name) || (!lastName && !name) || !email || !password) {
     return res
       .status(400)
-      .json({ message: "Name, email, and password are required." });
+      .json({ message: "First name, last name, email, and password are required." });
   }
 
   let session;
 
   try {
-    session = await authService.register({ name, email, password });
+    session = await authService.register({ firstName, middleName, lastName, name, email, password });
   } catch (error) {
     return next(error);
   }

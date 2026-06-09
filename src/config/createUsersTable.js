@@ -4,7 +4,9 @@ const userDbService = require('../services/userDbService');
 const starterUsers = [
   {
     id: 'admin-1',
-    name: 'Admin',
+    firstName: 'Admin',
+    middleName: '',
+    lastName: 'User',
     email: 'admin@example.com',
     password: 'Admin@123',
     role: 'admin',
@@ -12,7 +14,9 @@ const starterUsers = [
   },
   {
     id: 'user-1',
-    name: 'User',
+    firstName: 'Regular',
+    middleName: '',
+    lastName: 'User',
     email: 'user@example.com',
     password: 'User@123',
     role: 'user',
@@ -24,7 +28,9 @@ async function createUsersTable() {
   await query(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
+      first_name TEXT NOT NULL,
+      middle_name TEXT,
+      last_name TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'user',
@@ -35,6 +41,40 @@ async function createUsersTable() {
       CONSTRAINT users_status_check CHECK (status IN ('active', 'pending', 'inactive'))
     );
   `);
+
+  await query('ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT;');
+  await query('ALTER TABLE users ADD COLUMN IF NOT EXISTS middle_name TEXT;');
+  await query('ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name TEXT;');
+  await query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'users'
+          AND column_name = 'name'
+      ) THEN
+        UPDATE users
+        SET first_name = COALESCE(NULLIF(first_name, ''), split_part(name, ' ', 1), 'User'),
+            last_name = COALESCE(NULLIF(last_name, ''), NULLIF(regexp_replace(name, '^.*\\s+', ''), ''), split_part(name, ' ', 1), 'User')
+        WHERE first_name IS NULL
+           OR last_name IS NULL;
+      END IF;
+    END $$;
+  `);
+  await query(`
+    UPDATE users
+    SET first_name = 'User'
+    WHERE first_name IS NULL OR first_name = '';
+  `);
+  await query(`
+    UPDATE users
+    SET last_name = first_name
+    WHERE last_name IS NULL OR last_name = '';
+  `);
+  await query('ALTER TABLE users ALTER COLUMN first_name SET NOT NULL;');
+  await query('ALTER TABLE users ALTER COLUMN last_name SET NOT NULL;');
+  await query('ALTER TABLE users DROP COLUMN IF EXISTS name;');
 
   await query(`
     CREATE INDEX IF NOT EXISTS users_email_idx

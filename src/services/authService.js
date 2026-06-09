@@ -115,8 +115,8 @@ async function login(email, password) {
   };
 }
 
-async function register({ name, email, password }) {
-  const user = await userDbService.createUser({ name, email, password });
+async function register({ firstName, middleName, lastName, name, email, password }) {
+  const user = await userDbService.createUser({ firstName, middleName, lastName, name, email, password });
 
   if (!user) {
     return null;
