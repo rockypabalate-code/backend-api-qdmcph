@@ -10,6 +10,38 @@ function normalizeText(value) {
   return String(value || '').trim();
 }
 
+function splitName(name) {
+  const parts = normalizeText(name).split(/\s+/).filter(Boolean);
+
+  if (parts.length === 0) {
+    return { firstName: '', middleName: '', lastName: '' };
+  }
+
+  if (parts.length === 1) {
+    return { firstName: parts[0], middleName: '', lastName: parts[0] };
+  }
+
+  return {
+    firstName: parts[0],
+    middleName: parts.slice(1, -1).join(' '),
+    lastName: parts[parts.length - 1],
+  };
+}
+
+function normalizeNameParts({ firstName, middleName, lastName, name }) {
+  const fallback = splitName(name);
+
+  return {
+    firstName: normalizeText(firstName) || fallback.firstName,
+    middleName: normalizeText(middleName) || fallback.middleName,
+    lastName: normalizeText(lastName) || fallback.lastName,
+  };
+}
+
+function fullName({ firstName, middleName, lastName }) {
+  return [firstName, middleName, lastName].map(normalizeText).filter(Boolean).join(' ');
+}
+
 function normalizeRole(role) {
   return String(role || 'user').toLowerCase().trim();
 }
@@ -25,7 +57,14 @@ function rowToUser(row) {
 
   return new User({
     id: row.id,
-    name: row.name,
+    firstName: row.first_name,
+    middleName: row.middle_name,
+    lastName: row.last_name,
+    name: row.name || fullName({
+      firstName: row.first_name,
+      middleName: row.middle_name,
+      lastName: row.last_name,
+    }),
     email: row.email,
     passwordHash: row.password_hash,
     role: row.role,
@@ -35,7 +74,7 @@ function rowToUser(row) {
 
 async function getUsers() {
   const result = await query(`
-    SELECT id, name, email, password_hash, role, status
+    SELECT id, first_name, middle_name, last_name, email, password_hash, role, status
     FROM users
     ORDER BY created_at ASC;
   `);
@@ -46,7 +85,7 @@ async function getUsers() {
 async function getUserById(userId) {
   const result = await query(
     `
-      SELECT id, name, email, password_hash, role, status
+      SELECT id, first_name, middle_name, last_name, email, password_hash, role, status
       FROM users
       WHERE id = $1
       LIMIT 1;
@@ -60,7 +99,7 @@ async function getUserById(userId) {
 async function getUserByEmail(email) {
   const result = await query(
     `
-      SELECT id, name, email, password_hash, role, status
+      SELECT id, first_name, middle_name, last_name, email, password_hash, role, status
       FROM users
       WHERE email = $1
       LIMIT 1;
@@ -71,18 +110,21 @@ async function getUserByEmail(email) {
   return rowToUser(result.rows[0]);
 }
 
-async function createUser({ name, email, password }) {
+async function createUser({ firstName, middleName, lastName, name, email, password }) {
   const normalizedEmail = normalizeEmail(email);
+  const names = normalizeNameParts({ firstName, middleName, lastName, name });
   const result = await query(
     `
-      INSERT INTO users (id, name, email, password_hash, role, status)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO users (id, first_name, middle_name, last_name, email, password_hash, role, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       ON CONFLICT (email) DO NOTHING
-      RETURNING id, name, email, password_hash, role, status;
+      RETURNING id, first_name, middle_name, last_name, email, password_hash, role, status;
     `,
     [
       `user-${Date.now()}`,
-      normalizeText(name),
+      names.firstName,
+      names.middleName || null,
+      names.lastName,
       normalizedEmail,
       createPasswordHash(String(password || '')),
       'user',
@@ -100,7 +142,7 @@ async function updateUserStatus(userId, status) {
       SET status = $2,
           updated_at = NOW()
       WHERE id = $1
-      RETURNING id, name, email, password_hash, role, status;
+      RETURNING id, first_name, middle_name, last_name, email, password_hash, role, status;
     `,
     [normalizeText(userId), normalizeStatus(status)]
   );
@@ -108,17 +150,20 @@ async function updateUserStatus(userId, status) {
   return rowToUser(result.rows[0]);
 }
 
-async function upsertUser({ id, name, email, password, role, status }) {
+async function upsertUser({ id, firstName, middleName, lastName, name, email, password, role, status }) {
+  const names = normalizeNameParts({ firstName, middleName, lastName, name });
   const result = await query(
     `
-      INSERT INTO users (id, name, email, password_hash, role, status)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO users (id, first_name, middle_name, last_name, email, password_hash, role, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       ON CONFLICT (email) DO NOTHING
-      RETURNING id, name, email, password_hash, role, status;
+      RETURNING id, first_name, middle_name, last_name, email, password_hash, role, status;
     `,
     [
       normalizeText(id),
-      normalizeText(name),
+      names.firstName,
+      names.middleName || null,
+      names.lastName,
       normalizeEmail(email),
       createPasswordHash(String(password || '')),
       normalizeRole(role),

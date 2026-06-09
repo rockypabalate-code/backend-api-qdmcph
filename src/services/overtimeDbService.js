@@ -10,9 +10,62 @@ function nullable(value) {
   return normalized || null;
 }
 
+function splitName(name) {
+  const parts = normalize(name).split(/\s+/).filter(Boolean);
+
+  if (parts.length === 0) {
+    return { firstName: '', middleName: '', lastName: '' };
+  }
+
+  if (parts.length === 1) {
+    return { firstName: parts[0], middleName: '', lastName: parts[0] };
+  }
+
+  return {
+    firstName: parts[0],
+    middleName: parts.slice(1, -1).join(' '),
+    lastName: parts[parts.length - 1],
+  };
+}
+
+function normalizeNameParts({ firstName, middleName, lastName, fullName }) {
+  const fallback = splitName(fullName);
+
+  return {
+    firstName: normalize(firstName) || fallback.firstName,
+    middleName: normalize(middleName) || fallback.middleName,
+    lastName: normalize(lastName) || fallback.lastName,
+  };
+}
+
+function buildFullName({ firstName, middleName, lastName }) {
+  return [firstName, middleName, lastName].map(normalize).filter(Boolean).join(' ');
+}
+
 function toNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+function normalizeShift(value) {
+  const shift = normalize(value).toLowerCase();
+  return ['day', 'night'].includes(shift) ? shift : 'day';
+}
+
+function toBoolean(value) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  return ['true', '1', 'yes', 'leader'].includes(normalize(value).toLowerCase());
+}
+
+function getLeaderFlag(employeeData) {
+  if (Object.prototype.hasOwnProperty.call(employeeData, 'isDepartmentLeader')) {
+    return employeeData.isDepartmentLeader;
+  }
+
+  return employeeData.isLeader;
 }
 
 function roundMoney(value) {
@@ -50,6 +103,7 @@ function mapDepartment(row) {
   return {
     departmentId: row.department_id,
     departmentName: row.department_name,
+    parentDepartmentId: row.parent_department_id || '',
     headEmployeeId: row.head_employee_id || '',
     status: row.status,
   };
@@ -60,12 +114,21 @@ function mapEmployee(row) {
     employeeId: row.employee_id,
     userId: row.user_id,
     employeeNo: row.employee_no || '',
-    fullName: row.full_name,
+    firstName: row.first_name,
+    middleName: row.middle_name || '',
+    lastName: row.last_name,
+    fullName: buildFullName({
+      firstName: row.first_name,
+      middleName: row.middle_name,
+      lastName: row.last_name,
+    }),
     departmentId: row.department_id,
     position: row.position || '',
     managerId: row.manager_id || '',
+    shift: row.shift,
     employmentType: row.employment_type,
-    hourlyRate: toNumber(row.hourly_rate),
+    dailyRate: toNumber(row.daily_rate),
+    isDepartmentLeader: Boolean(row.is_department_leader),
     status: row.status,
     createdAt: iso(row.created_at),
   };
@@ -123,22 +186,22 @@ function mapPolicy(row) {
 
 async function getDepartments() {
   const result = await query(`
-    SELECT department_id, department_name, head_employee_id, status
+    SELECT department_id, department_name, parent_department_id, head_employee_id, status
     FROM departments
-    ORDER BY department_name ASC;
+    ORDER BY COALESCE(parent_department_id, department_id) ASC, parent_department_id NULLS FIRST, department_name ASC;
   `);
 
   return result.rows.map(mapDepartment);
 }
 
-async function createDepartment({ departmentName, headEmployeeId }) {
+async function createDepartment({ departmentName, parentDepartmentId, headEmployeeId }) {
   const result = await query(
     `
-      INSERT INTO departments (department_id, department_name, head_employee_id, status)
-      VALUES ($1, $2, $3, 'active')
-      RETURNING department_id, department_name, head_employee_id, status;
+      INSERT INTO departments (department_id, department_name, parent_department_id, head_employee_id, status)
+      VALUES ($1, $2, $3, $4, 'active')
+      RETURNING department_id, department_name, parent_department_id, head_employee_id, status;
     `,
-    [makeId('DEP'), normalize(departmentName), nullable(headEmployeeId)]
+    [makeId('DEP'), normalize(departmentName), nullable(parentDepartmentId), nullable(headEmployeeId)]
   );
 
   return mapDepartment(result.rows[0]);
@@ -146,8 +209,8 @@ async function createDepartment({ departmentName, headEmployeeId }) {
 
 async function getEmployees() {
   const result = await query(`
-    SELECT employee_id, user_id, employee_no, full_name, department_id, position,
-           manager_id, employment_type, hourly_rate, status, created_at
+    SELECT employee_id, user_id, employee_no, first_name, middle_name, last_name, department_id, position,
+           manager_id, shift, employment_type, daily_rate, is_department_leader, status, created_at
     FROM employees
     ORDER BY created_at ASC;
   `);
@@ -158,8 +221,8 @@ async function getEmployees() {
 async function getEmployeeByUserId(userId) {
   const result = await query(
     `
-      SELECT employee_id, user_id, employee_no, full_name, department_id, position,
-             manager_id, employment_type, hourly_rate, status, created_at
+      SELECT employee_id, user_id, employee_no, first_name, middle_name, last_name, department_id, position,
+             manager_id, shift, employment_type, daily_rate, is_department_leader, status, created_at
       FROM employees
       WHERE user_id = $1
       LIMIT 1;
@@ -173,8 +236,8 @@ async function getEmployeeByUserId(userId) {
 async function getEmployeeById(employeeId) {
   const result = await query(
     `
-      SELECT employee_id, user_id, employee_no, full_name, department_id, position,
-             manager_id, employment_type, hourly_rate, status, created_at
+      SELECT employee_id, user_id, employee_no, first_name, middle_name, last_name, department_id, position,
+             manager_id, shift, employment_type, daily_rate, is_department_leader, status, created_at
       FROM employees
       WHERE employee_id = $1
       LIMIT 1;
@@ -196,8 +259,47 @@ async function generateEmployeeNo() {
   return `EMP-${String(nextNumber).padStart(3, '0')}`;
 }
 
+async function syncDepartmentLeader(employeeId, departmentId, isDepartmentLeader) {
+  if (isDepartmentLeader) {
+    await query(
+      `
+        UPDATE employees
+        SET is_department_leader = false,
+            updated_at = NOW()
+        WHERE department_id = $1
+          AND employee_id <> $2;
+      `,
+      [normalize(departmentId), normalize(employeeId)]
+    );
+
+    await query(
+      `
+        UPDATE departments
+        SET head_employee_id = $2,
+            updated_at = NOW()
+        WHERE department_id = $1;
+      `,
+      [normalize(departmentId), normalize(employeeId)]
+    );
+    return;
+  }
+
+  await query(
+    `
+      UPDATE departments
+      SET head_employee_id = NULL,
+          updated_at = NOW()
+      WHERE department_id = $1
+        AND head_employee_id = $2;
+    `,
+    [normalize(departmentId), normalize(employeeId)]
+  );
+}
+
 async function createEmployee(employeeData) {
   const userId = normalize(employeeData.userId);
+  const hasLeaderFlag = Object.prototype.hasOwnProperty.call(employeeData, 'isDepartmentLeader')
+    || Object.prototype.hasOwnProperty.call(employeeData, 'isLeader');
 
   if (!await userDbService.getUserById(userId)) {
     return {
@@ -209,22 +311,50 @@ async function createEmployee(employeeData) {
   const existingEmployee = await getEmployeeByUserId(userId);
 
   if (existingEmployee) {
-    let employee = existingEmployee;
+    const isDepartmentLeader = hasLeaderFlag
+      ? toBoolean(getLeaderFlag(employeeData))
+      : existingEmployee.isDepartmentLeader;
+    const names = normalizeNameParts({
+      firstName: employeeData.firstName || existingEmployee.firstName,
+      middleName: employeeData.middleName || existingEmployee.middleName,
+      lastName: employeeData.lastName || existingEmployee.lastName,
+      fullName: employeeData.fullName || existingEmployee.fullName,
+    });
+    const result = await query(
+      `
+        UPDATE employees
+        SET first_name = $2,
+            middle_name = $3,
+            last_name = $4,
+            department_id = $5,
+            position = $6,
+            manager_id = $7,
+            shift = $8,
+            employment_type = $9,
+            daily_rate = $10,
+            is_department_leader = $11,
+            updated_at = NOW()
+        WHERE user_id = $1
+        RETURNING employee_id, user_id, employee_no, first_name, middle_name, last_name, department_id, position,
+                  manager_id, shift, employment_type, daily_rate, is_department_leader, status, created_at;
+      `,
+      [
+        userId,
+        names.firstName,
+        names.middleName || null,
+        names.lastName,
+        normalize(employeeData.departmentId) || existingEmployee.departmentId,
+        nullable(employeeData.position) || existingEmployee.position || null,
+        nullable(employeeData.managerId) || existingEmployee.managerId || null,
+        normalizeShift(employeeData.shift || existingEmployee.shift),
+        normalize(employeeData.employmentType) || existingEmployee.employmentType || 'regular',
+        toNumber(employeeData.dailyRate, existingEmployee.dailyRate),
+        isDepartmentLeader,
+      ]
+    );
+    const employee = mapEmployee(result.rows[0]);
 
-    if (normalize(employeeData.hourlyRate)) {
-      const result = await query(
-        `
-          UPDATE employees
-          SET hourly_rate = $2,
-              updated_at = NOW()
-          WHERE user_id = $1
-          RETURNING employee_id, user_id, employee_no, full_name, department_id, position,
-                    manager_id, employment_type, hourly_rate, status, created_at;
-        `,
-        [userId, toNumber(employeeData.hourlyRate)]
-      );
-      employee = mapEmployee(result.rows[0]);
-    }
+    await syncDepartmentLeader(employee.employeeId, employee.departmentId, employee.isDepartmentLeader);
 
     await userDbService.updateUserStatus(userId, 'active');
 
@@ -236,6 +366,11 @@ async function createEmployee(employeeData) {
   }
 
   const employeeNo = await generateEmployeeNo();
+  const names = normalizeNameParts(employeeData);
+  const isDepartmentLeader = hasLeaderFlag
+    ? toBoolean(getLeaderFlag(employeeData))
+    : false;
+  const employeeId = makeId('EMP');
 
   const result = await query(
     `
@@ -243,34 +378,44 @@ async function createEmployee(employeeData) {
         employee_id,
         user_id,
         employee_no,
-        full_name,
+        first_name,
+        middle_name,
+        last_name,
         department_id,
         position,
         manager_id,
+        shift,
         employment_type,
-        hourly_rate,
+        daily_rate,
+        is_department_leader,
         status
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active')
-      RETURNING employee_id, user_id, employee_no, full_name, department_id, position,
-                manager_id, employment_type, hourly_rate, status, created_at;
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'active')
+      RETURNING employee_id, user_id, employee_no, first_name, middle_name, last_name, department_id, position,
+                manager_id, shift, employment_type, daily_rate, is_department_leader, status, created_at;
     `,
     [
-      makeId('EMP'),
+      employeeId,
       userId,
       employeeNo,
-      normalize(employeeData.fullName),
+      names.firstName,
+      names.middleName || null,
+      names.lastName,
       normalize(employeeData.departmentId),
       nullable(employeeData.position),
       nullable(employeeData.managerId),
+      normalizeShift(employeeData.shift),
       normalize(employeeData.employmentType) || 'regular',
-      toNumber(employeeData.hourlyRate),
+      toNumber(employeeData.dailyRate),
+      isDepartmentLeader,
     ]
   );
 
+  const employee = mapEmployee(result.rows[0]);
+  await syncDepartmentLeader(employee.employeeId, employee.departmentId, employee.isDepartmentLeader);
   await userDbService.updateUserStatus(userId, 'active');
 
-  return mapEmployee(result.rows[0]);
+  return employee;
 }
 
 async function getOvertimeRequests() {
@@ -368,13 +513,13 @@ async function updateOvertimeStatus(overtimeId, status, actionBy, remarks) {
       };
     }
 
-    hourlyRate = toNumber(employee.hourlyRate);
+    hourlyRate = roundMoney(toNumber(employee.dailyRate) / 8);
     rateMultiplier = policy ? toNumber(policy.rateMultiplier, 1) : 1;
 
     if (hourlyRate <= 0) {
       return {
-        error: 'hourly_rate_required',
-        message: 'Employee hourly rate is required before marking overtime as paid.',
+        error: 'daily_rate_required',
+        message: 'Employee daily rate is required before marking overtime as paid.',
       };
     }
 

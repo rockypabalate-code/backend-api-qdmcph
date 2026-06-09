@@ -38,10 +38,20 @@ async function listEmployees(req, res, next) {
 }
 
 async function createEmployee(req, res, next) {
-  const { fullName, departmentId, userId, hourlyRate } = req.body;
+  const { firstName, lastName, fullName, departmentId, userId, dailyRate, shift } = req.body;
 
-  if (!fullName || !departmentId || !userId || !hourlyRate) {
-    return res.status(400).json({ message: 'Full name, department ID, user ID, and hourly rate are required.' });
+  if ((!firstName && !fullName) || (!lastName && !fullName) || !departmentId || !userId || dailyRate === undefined || !shift) {
+    return res.status(400).json({
+      message: 'First name, last name, department ID, user ID, shift, and daily rate are required.',
+    });
+  }
+
+  if (!['day', 'night'].includes(String(shift).toLowerCase().trim())) {
+    return res.status(400).json({ message: 'Shift must be day or night.' });
+  }
+
+  if (!Number.isFinite(Number(dailyRate)) || Number(dailyRate) <= 0) {
+    return res.status(400).json({ message: 'Daily rate must be greater than 0.' });
   }
 
   let employee;

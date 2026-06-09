@@ -1,7 +1,10 @@
 class User {
-  constructor({ id, name, email, passwordHash, role, status }) {
+  constructor({ id, firstName, middleName, lastName, name, email, passwordHash, role, status }) {
     this.id = id;
-    this.name = name;
+    this.firstName = firstName || '';
+    this.middleName = middleName || '';
+    this.lastName = lastName || '';
+    this.name = name || [this.firstName, this.middleName, this.lastName].filter(Boolean).join(' ');
     this.email = email;
     this.passwordHash = passwordHash;
     this.role = role;
@@ -11,6 +14,9 @@ class User {
   toJSON() {
     return {
       id: this.id,
+      firstName: this.firstName,
+      middleName: this.middleName,
+      lastName: this.lastName,
       name: this.name,
       email: this.email,
       role: this.role,
