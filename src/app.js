@@ -1,4 +1,5 @@
 const express = require('express');
+const { query } = require('./config/database');
 const adminRoutes = require('./routes/adminRoutes');
 const authRoutes = require('./routes/authRoutes');
 const overtimeRoutes = require('./routes/overtimeRoutes');
@@ -39,6 +40,19 @@ app.get('/', (req, res) => {
   });
 });
 
+app.get('/health', async (req, res, next) => {
+  try {
+    await query('SELECT 1');
+    return res.json({
+      status: 'ok',
+      database: 'ok',
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/overtime', overtimeRoutes);
@@ -48,6 +62,13 @@ app.use((req, res) => {
 });
 
 app.use((error, req, res, next) => {
+  const isJsonParseError = error.type === 'entity.parse.failed'
+    || (error instanceof SyntaxError && (error.status === 400 || error.statusCode === 400));
+
+  if (isJsonParseError) {
+    return res.status(400).json({ message: 'Invalid JSON request body.' });
+  }
+
   console.error(error);
   res.status(500).json({ message: 'Internal server error.' });
 });
