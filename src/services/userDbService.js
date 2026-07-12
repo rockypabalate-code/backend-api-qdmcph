@@ -110,7 +110,7 @@ async function getUserByEmail(email) {
   return rowToUser(result.rows[0]);
 }
 
-async function createUser({ firstName, middleName, lastName, name, email, password }) {
+async function createUser({ firstName, middleName, lastName, name, email, password, role = 'user', status = 'pending' }) {
   const normalizedEmail = normalizeEmail(email);
   const names = normalizeNameParts({ firstName, middleName, lastName, name });
   const result = await query(
@@ -127,16 +127,16 @@ async function createUser({ firstName, middleName, lastName, name, email, passwo
       names.lastName,
       normalizedEmail,
       createPasswordHash(String(password || '')),
-      'user',
-      'pending',
+      normalizeRole(role),
+      normalizeStatus(status),
     ]
   );
 
   return rowToUser(result.rows[0]);
 }
 
-async function updateUserStatus(userId, status) {
-  const result = await query(
+async function updateUserStatus(userId, status, executor = { query }) {
+  const result = await executor.query(
     `
       UPDATE users
       SET status = $2,

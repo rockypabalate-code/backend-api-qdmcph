@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { createPasswordHash, tokenExpiresInSeconds, tokenSecret } = require('../config/auth');
 const overtimeDbService = require('./overtimeDbService');
 const userDbService = require('./userDbService');
+const AppError = require('../utils/appError');
 
 function base64UrlEncode(value) {
   return Buffer.from(JSON.stringify(value)).toString('base64url');
@@ -96,17 +97,15 @@ async function login(email, password) {
   const user = await userDbService.getUserByEmail(normalizedEmail);
 
   if (!user || !verifyPassword(String(password || ''), user.passwordHash)) {
-    return {
-      error: 'invalid_credentials',
-      message: 'Invalid email or password.',
-    };
+    throw new AppError('Invalid email or password.', 401, 'INVALID_CREDENTIALS');
   }
 
   if (!await canAccessAccount(user)) {
-    return {
-      error: 'pending_employee_verification',
-      message: 'Your account is pending employee verification.',
-    };
+    throw new AppError(
+      'Your account is pending employee verification.',
+      403,
+      'PENDING_EMPLOYEE_VERIFICATION'
+    );
   }
 
   return {
@@ -115,21 +114,58 @@ async function login(email, password) {
   };
 }
 
-async function register({ firstName, middleName, lastName, name, email, password }) {
-  const user = await userDbService.createUser({ firstName, middleName, lastName, name, email, password });
+
+function normalizeRole(role) {
+  const normalizedRole = String(role || 'user').toLowerCase().trim();
+  const allowedRoles = ['admin', 'hr', 'manager', 'user'];
+
+  if (!allowedRoles.includes(normalizedRole)) {
+    throw new AppError('Invalid role. Allowed roles are admin, hr, manager, and user.', 400, 'INVALID_ROLE');
+  }
+
+  return normalizedRole;
+}
+
+function normalizeStatus(status) {
+  const normalizedStatus = String(status || 'pending').toLowerCase().trim();
+  const allowedStatuses = ['active', 'pending', 'inactive'];
+
+  if (!allowedStatuses.includes(normalizedStatus)) {
+    throw new AppError('Invalid status. Allowed statuses are active, pending, and inactive.', 400, 'INVALID_STATUS');
+  }
+
+  return normalizedStatus;
+}
+
+async function createAccount({ firstName, middleName, lastName, name, email, password, role, status, createdBy }) {
+  if (!createdBy || createdBy.role !== 'admin') {
+    throw new AppError('Only admin users can create accounts.', 403, 'ADMIN_ONLY_ACCOUNT_CREATION');
+  }
+
+  const user = await userDbService.createUser({
+    firstName,
+    middleName,
+    lastName,
+    name,
+    email,
+    password,
+    role: normalizeRole(role),
+    status: normalizeStatus(status),
+  });
 
   if (!user) {
-    return null;
+    throw new AppError('Email is already registered.', 409, 'EMAIL_ALREADY_REGISTERED');
   }
 
   return {
     user: user.toJSON(),
-    message: 'Account registered. Please wait for admin or HR employee verification before logging in.',
+    message: 'Account created by admin. Create the employee profile next to complete employee access.',
   };
 }
 
 module.exports = {
+  createAccount,
   login,
-  register,
+  register: createAccount,
   verifyToken,
 };

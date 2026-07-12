@@ -1,4 +1,8 @@
-const authService = require("../services/authService");
+const authService = require('../services/authService');
+
+function normalizeText(value) {
+  return String(value || '').trim();
+}
 
 async function login(req, res, next) {
   const { email, password } = req.body;
@@ -6,54 +10,55 @@ async function login(req, res, next) {
   if (!email || !password) {
     return res
       .status(400)
-      .json({ message: "Email and password are required." });
+      .json({ message: 'Email and password are required.' });
   }
 
-  let session;
-
   try {
-    session = await authService.login(email, password);
+    const session = await authService.login(email, password);
+    return res.json(session);
   } catch (error) {
     return next(error);
   }
-
-  if (!session) {
-    return res.status(401).json({ message: "Invalid email or password." });
-  }
-
-  if (session.error === "invalid_credentials") {
-    return res.status(401).json({ message: session.message });
-  }
-
-  if (session.error === "pending_employee_verification") {
-    return res.status(403).json({ message: session.message });
-  }
-
-  return res.json(session);
 }
 
-async function register(req, res, next) {
-  const { firstName, middleName, lastName, name, email, password } = req.body;
+async function createAccount(req, res, next) {
+  const {
+    firstName,
+    middleName,
+    lastName,
+    name,
+    email,
+    password,
+    role,
+    status,
+  } = req.body;
 
-  if ((!firstName && !name) || (!lastName && !name) || !email || !password) {
+  const hasNameParts = normalizeText(firstName) && normalizeText(lastName);
+  const hasFullName = normalizeText(name);
+
+  if ((!hasNameParts && !hasFullName) || !email || !password) {
     return res
       .status(400)
-      .json({ message: "First name, last name, email, and password are required." });
+      .json({ message: 'First name and last name or full name, email, and password are required.' });
   }
 
-  let session;
-
   try {
-    session = await authService.register({ firstName, middleName, lastName, name, email, password });
+    const result = await authService.createAccount({
+      firstName,
+      middleName,
+      lastName,
+      name,
+      email,
+      password,
+      role,
+      status,
+      createdBy: req.user,
+    });
+
+    return res.status(201).json(result);
   } catch (error) {
     return next(error);
   }
-
-  if (!session) {
-    return res.status(409).json({ message: "Email is already registered." });
-  }
-
-  return res.status(201).json(session);
 }
 
 function me(req, res) {
@@ -61,7 +66,8 @@ function me(req, res) {
 }
 
 module.exports = {
+  createAccount,
   login,
   me,
-  register,
+  register: createAccount,
 };

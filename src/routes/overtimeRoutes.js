@@ -16,7 +16,14 @@ router.get('/policies', authorize('admin', 'hr', 'manager'), overtimeController.
 
 router.get('/requests', overtimeController.listOvertimeRequests);
 router.post('/requests', overtimeController.createOvertimeRequest);
+router.get('/requests/summary', overtimeController.getUserOvertimeDashboardSummary);
+router.get('/requests/admin-summary', authorize('admin', 'hr', 'manager'), overtimeController.getAdminHrOvertimeDashboardSummary);
+router.get('/requests/pending', authorize('admin', 'hr', 'manager'), overtimeController.listPendingOvertimeRequests);
+router.get('/requests/unpaid', authorize('admin', 'hr'), overtimeController.listUnpaidApprovedOvertimeRequests);
 router.get('/requests/:overtimeId', overtimeController.getOvertimeRequest);
+router.patch('/requests/:overtimeId', overtimeController.updateOwnPendingOvertimeRequest);
+router.patch('/requests/:overtimeId/cancel', overtimeController.cancelOwnPendingOvertimeRequest);
+router.get('/requests/:overtimeId/logs', overtimeController.listOvertimeRequestLogs);
 router.patch('/requests/:overtimeId/approve', authorize('admin', 'hr', 'manager'), overtimeController.approveOvertimeRequest);
 router.patch('/requests/:overtimeId/reject', authorize('admin', 'hr', 'manager'), overtimeController.rejectOvertimeRequest);
 router.patch('/requests/:overtimeId/paid', authorize('admin', 'hr'), overtimeController.markOvertimeAsPaid);

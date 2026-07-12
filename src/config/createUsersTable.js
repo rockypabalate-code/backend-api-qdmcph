@@ -25,6 +25,8 @@ const starterUsers = [
 ];
 
 async function createUsersTable() {
+  // User names are stored here as the single source of truth.
+  // Employee records should link to users through user_id instead of duplicating names.
   await query(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
