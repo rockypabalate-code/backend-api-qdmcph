@@ -20,7 +20,7 @@ const starterUsers = [
     email: 'user@example.com',
     password: 'User@123',
     role: 'user',
-    status: 'pending',
+    status: 'active',
   },
 ];
 
@@ -36,7 +36,7 @@ async function createUsersTable() {
       email TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'user',
-      status TEXT NOT NULL DEFAULT 'pending',
+      status TEXT NOT NULL DEFAULT 'active',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       CONSTRAINT users_role_check CHECK (role IN ('admin', 'user', 'hr', 'manager')),
@@ -77,6 +77,13 @@ async function createUsersTable() {
   await query('ALTER TABLE users ALTER COLUMN first_name SET NOT NULL;');
   await query('ALTER TABLE users ALTER COLUMN last_name SET NOT NULL;');
   await query('ALTER TABLE users DROP COLUMN IF EXISTS name;');
+
+
+
+  await query(`
+    ALTER TABLE users
+    ALTER COLUMN status SET DEFAULT 'active';
+  `);
 
   await query(`
     CREATE INDEX IF NOT EXISTS users_email_idx

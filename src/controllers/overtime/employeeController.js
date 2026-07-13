@@ -37,7 +37,31 @@ async function createEmployee(req, res, next) {
   }
 }
 
+async function updateEmployee(req, res, next) {
+  const { shift, dailyRate, status } = req.body;
+
+  if (shift !== undefined && !['day', 'night'].includes(String(shift).toLowerCase().trim())) {
+    return res.status(400).json({ message: 'Shift must be day or night.' });
+  }
+
+  if (dailyRate !== undefined && (!Number.isFinite(Number(dailyRate)) || Number(dailyRate) <= 0)) {
+    return res.status(400).json({ message: 'Daily rate must be greater than 0.' });
+  }
+
+  if (status !== undefined && !['active', 'inactive'].includes(String(status).toLowerCase().trim())) {
+    return res.status(400).json({ message: 'Employee status must be active or inactive.' });
+  }
+
+  try {
+    const result = await overtimeService.updateEmployee(req.params.employeeId, req.body);
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+}
+
 module.exports = {
   listEmployees,
   createEmployee,
+  updateEmployee,
 };

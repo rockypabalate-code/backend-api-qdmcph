@@ -103,6 +103,23 @@ async function canCreateForEmployee(user, targetEmployee) {
   return targetEmployee.userId === user.id;
 }
 
+async function canEditOvertimeRequest(user, overtimeRequest) {
+  if (isAdminOrHr(user)) {
+    return true;
+  }
+
+  if (isManager(user)) {
+    const managerEmployee = await getManagerEmployee(user);
+    return Boolean(
+      managerEmployee
+        && managerEmployee.departmentId
+        && overtimeRequest.departmentId === managerEmployee.departmentId
+    );
+  }
+
+  return isOwnOvertimeRequest(user, overtimeRequest);
+}
+
 async function listOvertimeRequests(req, res, next) {
   try {
     if (isAdminOrHr(req.user) || isManager(req.user)) {
@@ -285,8 +302,14 @@ async function updateOwnPendingOvertimeRequest(req, res, next) {
     return res.status(404).json({ message: 'Overtime request not found.' });
   }
 
-  if (!isOwnOvertimeRequest(req.user, overtimeRequest)) {
-    return res.status(403).json({ message: 'You can only edit your own overtime request.' });
+  try {
+    const allowed = await canEditOvertimeRequest(req.user, overtimeRequest);
+
+    if (!allowed) {
+      return res.status(403).json({ message: 'You do not have permission to edit this overtime request.' });
+    }
+  } catch (error) {
+    return next(error);
   }
 
   try {
@@ -302,7 +325,7 @@ async function updateOwnPendingOvertimeRequest(req, res, next) {
   }
 }
 
-async function cancelOwnPendingOvertimeRequest(req, res, next) {
+async function deleteOvertimeRequest(req, res, next) {
   let overtimeRequest;
 
   try {
@@ -315,18 +338,35 @@ async function cancelOwnPendingOvertimeRequest(req, res, next) {
     return res.status(404).json({ message: 'Overtime request not found.' });
   }
 
-  if (!isOwnOvertimeRequest(req.user, overtimeRequest)) {
-    return res.status(403).json({ message: 'You can only cancel your own overtime request.' });
+  const isAdminHr = isAdminOrHr(req.user);
+  const isOwner = isOwnOvertimeRequest(req.user, overtimeRequest);
+
+  if (!isAdminHr && !isOwner) {
+    return res.status(403).json({ message: 'You do not have permission to delete this overtime request.' });
+  }
+
+  if (!isAdminHr && overtimeRequest.status !== 'pending') {
+    return res.status(400).json({ message: 'Only pending overtime requests can be deleted by the user.' });
+  }
+
+  if (isAdminHr && overtimeRequest.status === 'paid') {
+    return res.status(400).json({ message: 'Paid overtime requests cannot be deleted.' });
   }
 
   try {
-    const cancelledOvertimeRequest = await overtimeService.cancelPendingOvertimeRequest(
-      req.params.overtimeId,
-      req.user.id,
-      req.body.remarks
-    );
+    const deletedOvertimeRequest = await overtimeService.deleteOvertimeRequest(req.params.overtimeId, {
+      pendingOnly: !isAdminHr,
+      allowPaid: false,
+    });
 
-    return res.json({ overtimeRequest: cancelledOvertimeRequest });
+    if (!deletedOvertimeRequest) {
+      return res.status(404).json({ message: 'Overtime request not found.' });
+    }
+
+    return res.json({
+      message: 'Overtime request deleted successfully.',
+      overtimeRequest: deletedOvertimeRequest,
+    });
   } catch (error) {
     return next(error);
   }
@@ -410,7 +450,7 @@ function markOvertimeAsPaid(req, res, next) {
 
 module.exports = {
   approveOvertimeRequest,
-  cancelOwnPendingOvertimeRequest,
+  deleteOvertimeRequest,
   createOvertimeRequest,
   getAdminHrOvertimeDashboardSummary,
   getOvertimeRequest,

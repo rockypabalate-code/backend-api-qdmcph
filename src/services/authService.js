@@ -52,44 +52,48 @@ async function verifyToken(token) {
     return null;
   }
 
-  const [header, payload, signature] = token.split('.');
+  try {
+    const [header, payload, signature] = token.split('.');
 
-  if (!header || !payload || !signature) {
+    if (!header || !payload || !signature) {
+      return null;
+    }
+
+    const unsignedToken = `${header}.${payload}`;
+    const expectedSignature = sign(unsignedToken);
+
+    if (!secureCompare(signature, expectedSignature)) {
+      return null;
+    }
+
+    const decodedPayload = base64UrlDecode(payload);
+
+    if (decodedPayload.exp < Math.floor(Date.now() / 1000)) {
+      return null;
+    }
+
+    const user = await userDbService.getUserById(decodedPayload.sub);
+
+    if (!user || !isAccountActive(user)) {
+      return null;
+    }
+
+    if (user.role === 'user') {
+      const employeeProfile = await overtimeDbService.getEmployeeByUserId(user.id);
+
+      if (!employeeProfile) {
+        return null;
+      }
+    }
+
+    return user;
+  } catch (error) {
     return null;
   }
-
-  const unsignedToken = `${header}.${payload}`;
-  const expectedSignature = sign(unsignedToken);
-
-  if (!secureCompare(signature, expectedSignature)) {
-    return null;
-  }
-
-  const decodedPayload = base64UrlDecode(payload);
-
-  if (decodedPayload.exp < Math.floor(Date.now() / 1000)) {
-    return null;
-  }
-
-  const user = await userDbService.getUserById(decodedPayload.sub);
-
-  if (!user || !await canAccessAccount(user)) {
-    return null;
-  }
-
-  return user;
 }
 
-async function canAccessAccount(user) {
-  if (user.status !== 'active') {
-    return false;
-  }
-
-  if (user.role === 'user') {
-    return Boolean(await overtimeDbService.getEmployeeByUserId(user.id));
-  }
-
-  return true;
+function isAccountActive(user) {
+  return user.status === 'active';
 }
 
 async function login(email, password) {
@@ -100,17 +104,33 @@ async function login(email, password) {
     throw new AppError('Invalid email or password.', 401, 'INVALID_CREDENTIALS');
   }
 
-  if (!await canAccessAccount(user)) {
+  if (!isAccountActive(user)) {
     throw new AppError(
-      'Your account is pending employee verification.',
+      'Your account is not active. Please contact the administrator.',
       403,
-      'PENDING_EMPLOYEE_VERIFICATION'
+      'ACCOUNT_NOT_ACTIVE'
+    );
+  }
+
+  const employeeProfile = user.role === 'user'
+    ? await overtimeDbService.getEmployeeByUserId(user.id)
+    : null;
+
+  if (user.role === 'user' && !employeeProfile) {
+    throw new AppError(
+      'Employee profile is required before this user can log in. Please contact the administrator.',
+      403,
+      'EMPLOYEE_PROFILE_REQUIRED'
     );
   }
 
   return {
     token: createToken(user),
-    user: user.toJSON(),
+    user: {
+      ...user.toJSON(),
+      hasEmployeeProfile: user.role !== 'user' || Boolean(employeeProfile),
+      employeeId: employeeProfile ? employeeProfile.employeeId : null,
+    },
   };
 }
 
@@ -127,7 +147,7 @@ function normalizeRole(role) {
 }
 
 function normalizeStatus(status) {
-  const normalizedStatus = String(status || 'pending').toLowerCase().trim();
+  const normalizedStatus = String(status || 'active').toLowerCase().trim();
   const allowedStatuses = ['active', 'pending', 'inactive'];
 
   if (!allowedStatuses.includes(normalizedStatus)) {
@@ -159,13 +179,155 @@ async function createAccount({ firstName, middleName, lastName, name, email, pas
 
   return {
     user: user.toJSON(),
-    message: 'Account created by admin. Create the employee profile next to complete employee access.',
+    message: user.role === 'user'
+      ? 'Account created by admin. Create the employee profile before the user can log in.'
+      : 'Account created by admin.',
+  };
+}
+
+async function listAccounts({ requestedBy }) {
+  if (!requestedBy || requestedBy.role !== 'admin') {
+    throw new AppError('Only admin users can view accounts.', 403, 'ADMIN_ONLY_ACCOUNT_LIST');
+  }
+
+  const users = await userDbService.getUsers();
+  return {
+    users: users.map((user) => user.toJSON()),
+  };
+}
+
+function requireNonEmptyNameForUpdate(updates) {
+  if (Object.prototype.hasOwnProperty.call(updates, 'firstName') && !String(updates.firstName || '').trim()) {
+    throw new AppError('First name cannot be empty.', 400, 'FIRST_NAME_REQUIRED');
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'lastName') && !String(updates.lastName || '').trim()) {
+    throw new AppError('Last name cannot be empty.', 400, 'LAST_NAME_REQUIRED');
+  }
+}
+
+async function updateAccount(userId, updates, { updatedBy }) {
+  if (!updatedBy || updatedBy.role !== 'admin') {
+    throw new AppError('Only admin users can update accounts.', 403, 'ADMIN_ONLY_ACCOUNT_UPDATE');
+  }
+
+  const existingUser = await userDbService.getUserById(userId);
+
+  if (!existingUser) {
+    throw new AppError('Account not found.', 404, 'ACCOUNT_NOT_FOUND');
+  }
+
+  const allowedUpdates = {};
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'firstName')) {
+    allowedUpdates.firstName = updates.firstName;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'middleName')) {
+    allowedUpdates.middleName = updates.middleName;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'lastName')) {
+    allowedUpdates.lastName = updates.lastName;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'email')) {
+    const email = String(updates.email || '').toLowerCase().trim();
+
+    if (!email) {
+      throw new AppError('Email cannot be empty.', 400, 'EMAIL_REQUIRED');
+    }
+
+    allowedUpdates.email = email;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'password')) {
+    if (!String(updates.password || '').trim()) {
+      throw new AppError('Password cannot be empty.', 400, 'PASSWORD_REQUIRED');
+    }
+
+    allowedUpdates.password = updates.password;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'role')) {
+    allowedUpdates.role = normalizeRole(updates.role);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'status')) {
+    allowedUpdates.status = normalizeStatus(updates.status);
+  }
+
+  requireNonEmptyNameForUpdate(allowedUpdates);
+
+  const nextRole = allowedUpdates.role || existingUser.role;
+  const nextStatus = allowedUpdates.status || existingUser.status;
+
+  if (updatedBy.id === existingUser.id && (nextRole !== 'admin' || nextStatus !== 'active')) {
+    throw new AppError('You cannot remove your own active admin access.', 400, 'CANNOT_REMOVE_OWN_ADMIN_ACCESS');
+  }
+
+  if (existingUser.role === 'admin' && existingUser.status === 'active' && (nextRole !== 'admin' || nextStatus !== 'active')) {
+    const activeAdminCount = await userDbService.countActiveAdmins();
+
+    if (activeAdminCount <= 1) {
+      throw new AppError('Cannot remove the last active admin account.', 400, 'LAST_ACTIVE_ADMIN');
+    }
+  }
+
+  const user = await userDbService.updateUser(existingUser.id, allowedUpdates);
+
+  return {
+    user: user.toJSON(),
+    message: 'Account updated successfully.',
+  };
+}
+
+async function deleteAccount(userId, { deletedBy }) {
+  const result = await userDbService.deleteUserAccount(userId, deletedBy);
+
+  return {
+    deletedUser: result.user,
+    deletedEmployeeId: result.deletedEmployeeId,
+    message: result.deletedEmployeeId
+      ? 'Account and linked employee profile were deleted successfully.'
+      : 'Account deleted successfully.',
+  };
+}
+
+
+async function forceDeleteAccount(userId, { deletedBy, adminPassword }) {
+  if (!deletedBy || deletedBy.role !== 'admin') {
+    throw new AppError('Only admin users can force delete accounts.', 403, 'ADMIN_ONLY_FORCE_ACCOUNT_DELETE');
+  }
+
+  if (!String(adminPassword || '').trim()) {
+    throw new AppError('Admin password is required to force delete an account.', 400, 'ADMIN_PASSWORD_REQUIRED');
+  }
+
+  const adminUser = await userDbService.getUserById(deletedBy.id);
+
+  if (!adminUser || !verifyPassword(String(adminPassword || ''), adminUser.passwordHash)) {
+    throw new AppError('Admin password is incorrect.', 401, 'INVALID_ADMIN_PASSWORD');
+  }
+
+  const result = await userDbService.forceDeleteUserAccount(userId, deletedBy);
+
+  return {
+    deletedUser: result.user,
+    deletedEmployeeId: result.deletedEmployeeId,
+    deletedOvertimeCount: result.deletedOvertimeCount,
+    reassignedReferences: result.reassignedReferences,
+    message: 'Account was force deleted successfully. Linked employee overtime records were deleted and remaining user references were reassigned to the deleting admin account.',
   };
 }
 
 module.exports = {
   createAccount,
+  deleteAccount,
+  forceDeleteAccount,
+  listAccounts,
   login,
   register: createAccount,
+  updateAccount,
   verifyToken,
 };

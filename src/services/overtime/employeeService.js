@@ -25,22 +25,6 @@ function normalizeShift(value) {
   return ['day', 'night'].includes(shift) ? shift : 'day';
 }
 
-function toBoolean(value) {
-  if (typeof value === 'boolean') {
-    return value;
-  }
-
-  return ['true', '1', 'yes', 'leader'].includes(normalize(value).toLowerCase());
-}
-
-function getLeaderFlag(employeeData) {
-  if (Object.prototype.hasOwnProperty.call(employeeData, 'isDepartmentLeader')) {
-    return employeeData.isDepartmentLeader;
-  }
-
-  return employeeData.isLeader;
-}
-
 function iso(value) {
   return value instanceof Date ? value.toISOString() : value || '';
 }
@@ -70,7 +54,6 @@ function mapEmployee(row) {
     shift: row.shift,
     employmentType: row.employment_type,
     dailyRate: toNumber(row.daily_rate),
-    isDepartmentLeader: Boolean(row.is_department_leader),
     status: row.status,
     userStatus: row.user_status || '',
     createdAt: iso(row.created_at),
@@ -89,7 +72,6 @@ const employeeSelect = `
     e.shift,
     e.employment_type,
     e.daily_rate,
-    e.is_department_leader,
     e.status,
     e.created_at,
     u.first_name AS user_first_name,
@@ -148,47 +130,8 @@ async function generateEmployeeNo(executor = { query }) {
   return `EMP-${String(nextNumber).padStart(3, '0')}`;
 }
 
-async function syncDepartmentLeader(employeeId, departmentId, isDepartmentLeader, executor = { query }) {
-  if (isDepartmentLeader) {
-    await executor.query(
-      `
-        UPDATE employees
-        SET is_department_leader = false,
-            updated_at = NOW()
-        WHERE department_id = $1
-          AND employee_id <> $2;
-      `,
-      [normalize(departmentId), normalize(employeeId)]
-    );
-
-    await executor.query(
-      `
-        UPDATE departments
-        SET head_employee_id = $2,
-            updated_at = NOW()
-        WHERE department_id = $1;
-      `,
-      [normalize(qq), normalize(employeeId)]
-    );
-    return;
-  }
-
-  await executor.query(
-    `
-      UPDATE departments
-      SET head_employee_id = NULL,
-          updated_at = NOW()
-      WHERE department_id = $1
-        AND head_employee_id = $2;
-    `,
-    [normalize(departmentId), normalize(employeeId)]
-  );
-}
-
 async function createEmployee(employeeData) {
   const userId = normalize(employeeData.userId);
-  const hasLeaderFlag = Object.prototype.hasOwnProperty.call(employeeData, 'isDepartmentLeader')
-    || Object.prototype.hasOwnProperty.call(employeeData, 'isLeader');
   const user = await userDbService.getUserById(userId);
 
   if (!user) {
@@ -199,9 +142,6 @@ async function createEmployee(employeeData) {
     const existingEmployee = await getEmployeeByUserId(userId, client);
 
     if (existingEmployee) {
-      const isDepartmentLeader = hasLeaderFlag
-        ? toBoolean(getLeaderFlag(employeeData))
-        : existingEmployee.isDepartmentLeader;
       const result = await client.query(
         `
           UPDATE employees
@@ -211,7 +151,6 @@ async function createEmployee(employeeData) {
               shift = $5,
               employment_type = $6,
               daily_rate = $7,
-              is_department_leader = $8,
               updated_at = NOW()
           WHERE user_id = $1
           RETURNING employee_id;
@@ -224,12 +163,10 @@ async function createEmployee(employeeData) {
           normalizeShift(employeeData.shift || existingEmployee.shift),
           normalize(employeeData.employmentType) || existingEmployee.employmentType || 'regular',
           toNumber(employeeData.dailyRate, existingEmployee.dailyRate),
-          isDepartmentLeader,
         ]
       );
 
       const employee = await getEmployeeById(result.rows[0].employee_id, client);
-      await syncDepartmentLeader(employee.employeeId, employee.departmentId, employee.isDepartmentLeader, client);
       await userDbService.updateUserStatus(userId, 'active', client);
 
       return {
@@ -242,9 +179,6 @@ async function createEmployee(employeeData) {
     await client.query('LOCK TABLE employees IN SHARE ROW EXCLUSIVE MODE;');
 
     const employeeNo = await generateEmployeeNo(client);
-    const isDepartmentLeader = hasLeaderFlag
-      ? toBoolean(getLeaderFlag(employeeData))
-      : false;
     const employeeId = makeId('EMP');
 
     const result = await client.query(
@@ -259,10 +193,9 @@ async function createEmployee(employeeData) {
           shift,
           employment_type,
           daily_rate,
-          is_department_leader,
           status
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active')
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active')
         RETURNING employee_id;
       `,
       [
@@ -275,12 +208,10 @@ async function createEmployee(employeeData) {
         normalizeShift(employeeData.shift),
         normalize(employeeData.employmentType) || 'regular',
         toNumber(employeeData.dailyRate),
-        isDepartmentLeader,
       ]
     );
 
     const employee = await getEmployeeById(result.rows[0].employee_id, client);
-    await syncDepartmentLeader(employee.employeeId, employee.departmentId, employee.isDepartmentLeader, client);
     await userDbService.updateUserStatus(userId, 'active', client);
 
     return {
@@ -291,9 +222,110 @@ async function createEmployee(employeeData) {
   });
 }
 
+function normalizeEmployeeStatus(value) {
+  const status = normalize(value || 'active').toLowerCase();
+  return ['active', 'inactive'].includes(status) ? status : null;
+}
+
+async function updateEmployee(employeeId, updates = {}) {
+  const normalizedEmployeeId = normalize(employeeId);
+  const existingEmployee = await getEmployeeById(normalizedEmployeeId);
+
+  if (!existingEmployee) {
+    throw new AppError('Employee profile not found.', 404, 'EMPLOYEE_NOT_FOUND');
+  }
+
+  const fields = [];
+  const values = [normalizedEmployeeId];
+
+  function addField(column, value) {
+    values.push(value);
+    fields.push(`${column} = $${values.length}`);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'departmentId')) {
+    const departmentId = normalize(updates.departmentId);
+
+    if (!departmentId) {
+      throw new AppError('Department ID cannot be empty.', 400, 'DEPARTMENT_ID_REQUIRED');
+    }
+
+    addField('department_id', departmentId);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'position')) {
+    addField('position', nullable(updates.position));
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'managerId')) {
+    addField('manager_id', nullable(updates.managerId));
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'shift')) {
+    const shift = normalize(updates.shift).toLowerCase();
+
+    if (!['day', 'night'].includes(shift)) {
+      throw new AppError('Shift must be day or night.', 400, 'INVALID_SHIFT');
+    }
+
+    addField('shift', shift);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'employmentType')) {
+    addField('employment_type', normalize(updates.employmentType) || 'regular');
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'dailyRate')) {
+    const dailyRate = Number(updates.dailyRate);
+
+    if (!Number.isFinite(dailyRate) || dailyRate <= 0) {
+      throw new AppError('Daily rate must be greater than 0.', 400, 'INVALID_DAILY_RATE');
+    }
+
+    addField('daily_rate', dailyRate);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'status')) {
+    const status = normalizeEmployeeStatus(updates.status);
+
+    if (!status) {
+      throw new AppError('Employee status must be active or inactive.', 400, 'INVALID_EMPLOYEE_STATUS');
+    }
+
+    addField('status', status);
+  }
+
+  if (fields.length === 0) {
+    return {
+      employee: existingEmployee,
+      message: 'No employee profile changes were provided.',
+    };
+  }
+
+  fields.push('updated_at = NOW()');
+
+  const result = await query(
+    `
+      UPDATE employees
+      SET ${fields.join(', ')}
+      WHERE employee_id = $1
+      RETURNING employee_id;
+    `,
+    values
+  );
+
+  const employee = await getEmployeeById(result.rows[0].employee_id);
+
+  return {
+    employee,
+    message: 'Employee profile updated successfully.',
+  };
+}
+
 module.exports = {
   createEmployee,
   getEmployeeById,
   getEmployeeByUserId,
   getEmployees,
+  updateEmployee,
 };

@@ -6,7 +6,7 @@ const AppError = require('../../utils/appError');
 
 const VALID_OVERTIME_STATUSES = ['pending', 'approved', 'rejected', 'paid', 'cancelled'];
 const ALLOWED_STATUS_TRANSITIONS = {
-  pending: ['approved', 'rejected', 'cancelled'],
+  pending: ['approved', 'rejected'],
   approved: ['paid'],
   rejected: [],
   paid: [],
@@ -992,7 +992,9 @@ async function updatePendingOvertimeRequest(overtimeId, updateData, actionBy) {
   });
 }
 
-async function cancelPendingOvertimeRequest(overtimeId, actionBy, remarks) {
+async function deleteOvertimeRequest(overtimeId, options = {}) {
+  const { pendingOnly = false, allowPaid = false } = options;
+
   return transaction(async (client) => {
     const requestResult = await client.query(
       'SELECT * FROM overtime_requests WHERE overtime_id = $1 LIMIT 1 FOR UPDATE;',
@@ -1003,28 +1005,32 @@ async function cancelPendingOvertimeRequest(overtimeId, actionBy, remarks) {
       return null;
     }
 
-    if (requestResult.rows[0].status !== 'pending') {
+    const currentStatus = normalize(requestResult.rows[0].status);
+
+    if (pendingOnly && currentStatus !== 'pending') {
       throw new AppError(
-        'Only pending overtime requests can be cancelled.',
+        'Only pending overtime requests can be deleted.',
         400,
-        'OVERTIME_NOT_CANCELLABLE'
+        'OVERTIME_NOT_DELETABLE'
       );
     }
 
+    if (!allowPaid && currentStatus === 'paid') {
+      throw new AppError(
+        'Paid overtime requests cannot be deleted.',
+        400,
+        'PAID_OVERTIME_NOT_DELETABLE'
+      );
+    }
+
+    const overtimeRequest = await getOvertimeRequest(overtimeId, client);
+
     await client.query(
-      `
-        UPDATE overtime_requests
-        SET status = 'cancelled',
-            remarks = $2,
-            updated_at = NOW()
-        WHERE overtime_id = $1;
-      `,
-      [normalize(overtimeId), nullable(remarks)]
+      'DELETE FROM overtime_requests WHERE overtime_id = $1;',
+      [normalize(overtimeId)]
     );
 
-    await addApprovalLog(overtimeId, 'cancelled', actionBy, remarks || 'Overtime request cancelled.', client);
-
-    return getOvertimeRequest(overtimeId, client);
+    return overtimeRequest;
   });
 }
 
@@ -1119,7 +1125,7 @@ async function updateOvertimeStatus(overtimeId, status, actionBy, remarks) {
 }
 
 module.exports = {
-  cancelPendingOvertimeRequest,
+  deleteOvertimeRequest,
   createOvertimeRequest,
   getOvertimeRequest,
   getOvertimeDashboardSummary,

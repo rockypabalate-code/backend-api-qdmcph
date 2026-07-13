@@ -1,5 +1,4 @@
 const express = require('express');
-const { query } = require('./config/database');
 const adminRoutes = require('./routes/adminRoutes');
 const authRoutes = require('./routes/authRoutes');
 const overtimeRoutes = require('./routes/overtimeRoutes');
@@ -25,32 +24,27 @@ app.get('/', (req, res) => {
     message: 'Backend API is running.',
     routes: {
       login: 'POST /api/auth/login',
-      register: 'POST /api/auth/register',
+      accounts: 'GET/POST/PATCH/DELETE /api/admin/users',
+      forceDeleteAccount: 'DELETE /api/admin/users/:userId/force',
+      createAccount: 'POST /api/admin/users',
+      legacyCreateAccount: 'POST /api/auth/register (admin token required)',
       me: 'GET /api/auth/me',
       adminDashboard: 'GET /api/admin/dashboard',
+      overtimePlans: 'GET/POST /api/overtime/plans',
+      overtimePlanItems: 'POST/PATCH/DELETE /api/overtime/plans/:planId/items',
+      overtimePlanWorkflow: 'PATCH /api/overtime/plans/:planId/submit|approve|reject|close',
       overtimeRequests: 'GET/POST /api/overtime/requests',
+      pendingOvertimeRequests: 'GET /api/overtime/requests/pending',
+      unpaidApprovedOvertimeRequests: 'GET /api/overtime/requests/unpaid',
       overtimeRequestDetail: 'GET /api/overtime/requests/:overtimeId',
       approveOvertime: 'PATCH /api/overtime/requests/:overtimeId/approve',
       rejectOvertime: 'PATCH /api/overtime/requests/:overtimeId/reject',
       paidOvertime: 'PATCH /api/overtime/requests/:overtimeId/paid',
-      employees: 'GET/POST /api/overtime/employees',
+      employees: 'GET/POST/PATCH /api/overtime/employees',
       departments: 'GET/POST /api/overtime/departments',
       policies: 'GET /api/overtime/policies',
     },
   });
-});
-
-app.get('/health', async (req, res, next) => {
-  try {
-    await query('SELECT 1');
-    return res.json({
-      status: 'ok',
-      database: 'ok',
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    return next(error);
-  }
 });
 
 app.use('/api/auth', authRoutes);
@@ -62,15 +56,22 @@ app.use((req, res) => {
 });
 
 app.use((error, req, res, next) => {
-  const isJsonParseError = error.type === 'entity.parse.failed'
-    || (error instanceof SyntaxError && (error.status === 400 || error.statusCode === 400));
+  const statusCode = error.statusCode || 500;
+  const response = {
+    message: statusCode >= 500 ? 'Internal server error.' : error.message,
+  };
 
-  if (isJsonParseError) {
-    return res.status(400).json({ message: 'Invalid JSON request body.' });
+  if (error.code && statusCode < 500) {
+    response.code = error.code;
   }
 
-  console.error(error);
-  res.status(500).json({ message: 'Internal server error.' });
+  if (statusCode >= 500) {
+    console.error(error);
+  } else {
+    console.warn(error.message);
+  }
+
+  res.status(statusCode).json(response);
 });
 
 module.exports = app;
