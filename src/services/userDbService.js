@@ -1,6 +1,7 @@
-const { query } = require('../config/database');
+const { query, transaction } = require('../config/database');
 const { createPasswordHash } = require('../config/auth');
 const User = require('../models/userModel');
+const AppError = require('../utils/appError');
 
 function normalizeEmail(email) {
   return String(email || '').toLowerCase().trim();
@@ -47,7 +48,7 @@ function normalizeRole(role) {
 }
 
 function normalizeStatus(status) {
-  return String(status || 'pending').toLowerCase().trim();
+  return String(status || 'active').toLowerCase().trim();
 }
 
 function rowToUser(row) {
@@ -72,21 +73,24 @@ function rowToUser(row) {
   });
 }
 
-async function getUsers() {
-  const result = await query(`
-    SELECT id, first_name, middle_name, last_name, email, password_hash, role, status
-    FROM users
+const userSelect = `
+  SELECT id, first_name, middle_name, last_name, email, password_hash, role, status
+  FROM users
+`;
+
+async function getUsers(executor = { query }) {
+  const result = await executor.query(`
+    ${userSelect}
     ORDER BY created_at ASC;
   `);
 
   return result.rows.map(rowToUser);
 }
 
-async function getUserById(userId) {
-  const result = await query(
+async function getUserById(userId, executor = { query }) {
+  const result = await executor.query(
     `
-      SELECT id, first_name, middle_name, last_name, email, password_hash, role, status
-      FROM users
+      ${userSelect}
       WHERE id = $1
       LIMIT 1;
     `,
@@ -96,11 +100,10 @@ async function getUserById(userId) {
   return rowToUser(result.rows[0]);
 }
 
-async function getUserByEmail(email) {
-  const result = await query(
+async function getUserByEmail(email, executor = { query }) {
+  const result = await executor.query(
     `
-      SELECT id, first_name, middle_name, last_name, email, password_hash, role, status
-      FROM users
+      ${userSelect}
       WHERE email = $1
       LIMIT 1;
     `,
@@ -110,7 +113,7 @@ async function getUserByEmail(email) {
   return rowToUser(result.rows[0]);
 }
 
-async function createUser({ firstName, middleName, lastName, name, email, password }) {
+async function createUser({ firstName, middleName, lastName, name, email, password, role = 'user', status = 'active' }) {
   const normalizedEmail = normalizeEmail(email);
   const names = normalizeNameParts({ firstName, middleName, lastName, name });
   const result = await query(
@@ -127,27 +130,80 @@ async function createUser({ firstName, middleName, lastName, name, email, passwo
       names.lastName,
       normalizedEmail,
       createPasswordHash(String(password || '')),
-      'user',
-      'pending',
+      normalizeRole(role),
+      normalizeStatus(status),
     ]
   );
 
   return rowToUser(result.rows[0]);
 }
 
-async function updateUserStatus(userId, status) {
-  const result = await query(
-    `
-      UPDATE users
-      SET status = $2,
-          updated_at = NOW()
-      WHERE id = $1
-      RETURNING id, first_name, middle_name, last_name, email, password_hash, role, status;
-    `,
-    [normalizeText(userId), normalizeStatus(status)]
-  );
+async function updateUser(userId, updates = {}, executor = { query }) {
+  const fields = [];
+  const values = [normalizeText(userId)];
 
-  return rowToUser(result.rows[0]);
+  function addField(column, value) {
+    values.push(value);
+    fields.push(`${column} = $${values.length}`);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'firstName')) {
+    addField('first_name', normalizeText(updates.firstName));
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'middleName')) {
+    addField('middle_name', normalizeText(updates.middleName) || null);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'lastName')) {
+    addField('last_name', normalizeText(updates.lastName));
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'email')) {
+    addField('email', normalizeEmail(updates.email));
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'password')) {
+    addField('password_hash', createPasswordHash(String(updates.password || '')));
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'role')) {
+    addField('role', normalizeRole(updates.role));
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'status')) {
+    addField('status', normalizeStatus(updates.status));
+  }
+
+  if (fields.length === 0) {
+    return getUserById(userId, executor);
+  }
+
+  fields.push('updated_at = NOW()');
+
+  try {
+    const result = await executor.query(
+      `
+        UPDATE users
+        SET ${fields.join(', ')}
+        WHERE id = $1
+        RETURNING id, first_name, middle_name, last_name, email, password_hash, role, status;
+      `,
+      values
+    );
+
+    return rowToUser(result.rows[0]);
+  } catch (error) {
+    if (error.code === '23505') {
+      throw new AppError('Email is already registered to another account.', 409, 'EMAIL_ALREADY_REGISTERED');
+    }
+
+    throw error;
+  }
+}
+
+async function updateUserStatus(userId, status, executor = { query }) {
+  return updateUser(userId, { status }, executor);
 }
 
 async function upsertUser({ id, firstName, middleName, lastName, name, email, password, role, status }) {
@@ -174,11 +230,294 @@ async function upsertUser({ id, firstName, middleName, lastName, name, email, pa
   return rowToUser(result.rows[0]);
 }
 
+async function countActiveAdmins(executor = { query }) {
+  const result = await executor.query(`
+    SELECT COUNT(*)::INTEGER AS count
+    FROM users
+    WHERE role = 'admin'
+      AND status = 'active';
+  `);
+
+  return Number(result.rows[0].count || 0);
+}
+
+async function getAccountDeleteDependencies(userId, executor = { query }) {
+  const normalizedUserId = normalizeText(userId);
+
+  const employeeResult = await executor.query(
+    `
+      SELECT employee_id
+      FROM employees
+      WHERE user_id = $1
+      LIMIT 1;
+    `,
+    [normalizedUserId]
+  );
+
+  const employeeId = employeeResult.rows[0] ? employeeResult.rows[0].employee_id : null;
+  const employeeOvertimeResult = employeeId
+    ? await executor.query(
+        `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM overtime_requests
+          WHERE employee_id = $1;
+        `,
+        [employeeId]
+      )
+    : { rows: [{ count: 0 }] };
+
+  const userReferencesResult = await executor.query(
+    `
+      SELECT
+        (SELECT COUNT(*)::INTEGER FROM overtime_requests WHERE submitted_by = $1) AS submitted_count,
+        (SELECT COUNT(*)::INTEGER FROM overtime_requests WHERE approved_by = $1) AS approved_count,
+        (SELECT COUNT(*)::INTEGER FROM overtime_requests WHERE rejected_by = $1) AS rejected_count,
+        (SELECT COUNT(*)::INTEGER FROM overtime_requests WHERE paid_by = $1) AS paid_count,
+        (SELECT COUNT(*)::INTEGER FROM approval_logs WHERE action_by = $1) AS approval_log_count;
+    `,
+    [normalizedUserId]
+  );
+
+  const userReferences = userReferencesResult.rows[0];
+
+  return {
+    employeeId,
+    employeeOvertimeCount: Number(employeeOvertimeResult.rows[0].count || 0),
+    submittedCount: Number(userReferences.submitted_count || 0),
+    approvedCount: Number(userReferences.approved_count || 0),
+    rejectedCount: Number(userReferences.rejected_count || 0),
+    paidCount: Number(userReferences.paid_count || 0),
+    approvalLogCount: Number(userReferences.approval_log_count || 0),
+  };
+}
+
+function hasHistoricalReferences(dependencies) {
+  return [
+    dependencies.employeeOvertimeCount,
+    dependencies.submittedCount,
+    dependencies.approvedCount,
+    dependencies.rejectedCount,
+    dependencies.paidCount,
+    dependencies.approvalLogCount,
+  ].some((count) => Number(count) > 0);
+}
+
+async function deleteUserAccount(userId, deletedBy) {
+  const normalizedUserId = normalizeText(userId);
+
+  if (!deletedBy || deletedBy.role !== 'admin') {
+    throw new AppError('Only admin users can delete accounts.', 403, 'ADMIN_ONLY_ACCOUNT_DELETE');
+  }
+
+  if (deletedBy.id === normalizedUserId) {
+    throw new AppError('You cannot delete your own admin account.', 400, 'CANNOT_DELETE_OWN_ACCOUNT');
+  }
+
+  return transaction(async (client) => {
+    const user = await getUserById(normalizedUserId, client);
+
+    if (!user) {
+      throw new AppError('Account not found.', 404, 'ACCOUNT_NOT_FOUND');
+    }
+
+    if (user.role === 'admin' && user.status === 'active') {
+      const activeAdminCount = await countActiveAdmins(client);
+
+      if (activeAdminCount <= 1) {
+        throw new AppError('Cannot delete the last active admin account.', 400, 'LAST_ACTIVE_ADMIN');
+      }
+    }
+
+    const dependencies = await getAccountDeleteDependencies(normalizedUserId, client);
+
+    if (hasHistoricalReferences(dependencies)) {
+      throw new AppError(
+        'This account has employee or overtime history and cannot be deleted. Set the account status to inactive instead.',
+        409,
+        'ACCOUNT_HAS_HISTORY'
+      );
+    }
+
+    if (dependencies.employeeId) {
+      await client.query(
+        `
+          UPDATE departments
+          SET head_employee_id = NULL,
+              updated_at = NOW()
+          WHERE head_employee_id = $1;
+        `,
+        [dependencies.employeeId]
+      );
+
+      await client.query(
+        `
+          DELETE FROM employees
+          WHERE employee_id = $1;
+        `,
+        [dependencies.employeeId]
+      );
+    }
+
+    await client.query('DELETE FROM users WHERE id = $1;', [normalizedUserId]);
+
+    return {
+      user: user.toJSON(),
+      deletedEmployeeId: dependencies.employeeId,
+    };
+  });
+}
+
+
+async function forceDeleteUserAccount(userId, deletedBy) {
+  const normalizedUserId = normalizeText(userId);
+
+  if (!deletedBy || deletedBy.role !== 'admin') {
+    throw new AppError('Only admin users can force delete accounts.', 403, 'ADMIN_ONLY_FORCE_ACCOUNT_DELETE');
+  }
+
+  if (deletedBy.id === normalizedUserId) {
+    throw new AppError('You cannot force delete your own admin account.', 400, 'CANNOT_DELETE_OWN_ACCOUNT');
+  }
+
+  return transaction(async (client) => {
+    const user = await getUserById(normalizedUserId, client);
+
+    if (!user) {
+      throw new AppError('Account not found.', 404, 'ACCOUNT_NOT_FOUND');
+    }
+
+    if (user.role === 'admin' && user.status === 'active') {
+      const activeAdminCount = await countActiveAdmins(client);
+
+      if (activeAdminCount <= 1) {
+        throw new AppError('Cannot delete the last active admin account.', 400, 'LAST_ACTIVE_ADMIN');
+      }
+    }
+
+    const dependencies = await getAccountDeleteDependencies(normalizedUserId, client);
+    const replacementUserId = deletedBy.id;
+    let deletedOvertimeCount = 0;
+    let deletedEmployeeId = null;
+
+    if (dependencies.employeeId) {
+      deletedEmployeeId = dependencies.employeeId;
+
+      await client.query(
+        `
+          UPDATE departments
+          SET head_employee_id = NULL,
+              updated_at = NOW()
+          WHERE head_employee_id = $1;
+        `,
+        [dependencies.employeeId]
+      );
+
+      await client.query(
+        `
+          UPDATE employees
+          SET manager_id = NULL,
+              updated_at = NOW()
+          WHERE manager_id = $1;
+        `,
+        [dependencies.employeeId]
+      );
+
+      const deletedOvertimeResult = await client.query(
+        `
+          DELETE FROM overtime_requests
+          WHERE employee_id = $1;
+        `,
+        [dependencies.employeeId]
+      );
+
+      deletedOvertimeCount = deletedOvertimeResult.rowCount;
+
+      await client.query(
+        `
+          DELETE FROM employees
+          WHERE employee_id = $1;
+        `,
+        [dependencies.employeeId]
+      );
+    }
+
+    const submittedUpdate = await client.query(
+      `
+        UPDATE overtime_requests
+        SET submitted_by = $2,
+            updated_at = NOW()
+        WHERE submitted_by = $1;
+      `,
+      [normalizedUserId, replacementUserId]
+    );
+
+    const approvedUpdate = await client.query(
+      `
+        UPDATE overtime_requests
+        SET approved_by = $2,
+            updated_at = NOW()
+        WHERE approved_by = $1;
+      `,
+      [normalizedUserId, replacementUserId]
+    );
+
+    const rejectedUpdate = await client.query(
+      `
+        UPDATE overtime_requests
+        SET rejected_by = $2,
+            updated_at = NOW()
+        WHERE rejected_by = $1;
+      `,
+      [normalizedUserId, replacementUserId]
+    );
+
+    const paidUpdate = await client.query(
+      `
+        UPDATE overtime_requests
+        SET paid_by = $2,
+            updated_at = NOW()
+        WHERE paid_by = $1;
+      `,
+      [normalizedUserId, replacementUserId]
+    );
+
+    const approvalLogUpdate = await client.query(
+      `
+        UPDATE approval_logs
+        SET action_by = $2
+        WHERE action_by = $1;
+      `,
+      [normalizedUserId, replacementUserId]
+    );
+
+    await client.query('DELETE FROM users WHERE id = $1;', [normalizedUserId]);
+
+    return {
+      user: user.toJSON(),
+      deletedEmployeeId,
+      deletedOvertimeCount,
+      reassignedReferences: {
+        submittedCount: submittedUpdate.rowCount,
+        approvedCount: approvedUpdate.rowCount,
+        rejectedCount: rejectedUpdate.rowCount,
+        paidCount: paidUpdate.rowCount,
+        approvalLogCount: approvalLogUpdate.rowCount,
+        reassignedToUserId: replacementUserId,
+      },
+    };
+  });
+}
+
 module.exports = {
+  countActiveAdmins,
   createUser,
+  deleteUserAccount,
+  forceDeleteUserAccount,
+  getAccountDeleteDependencies,
   getUserByEmail,
   getUserById,
   getUsers,
+  updateUser,
   updateUserStatus,
   upsertUser,
 };

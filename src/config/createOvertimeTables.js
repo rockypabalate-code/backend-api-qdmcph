@@ -57,16 +57,12 @@ async function createOvertimeTables() {
       employee_id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE RESTRICT,
       employee_no TEXT,
-      first_name TEXT NOT NULL,
-      middle_name TEXT,
-      last_name TEXT NOT NULL,
       department_id TEXT NOT NULL REFERENCES departments(department_id) ON DELETE RESTRICT,
       position TEXT,
       manager_id TEXT,
       shift TEXT NOT NULL DEFAULT 'day',
       employment_type TEXT NOT NULL DEFAULT 'regular',
       daily_rate NUMERIC(12, 2) NOT NULL DEFAULT 0,
-      is_department_leader BOOLEAN NOT NULL DEFAULT false,
       status TEXT NOT NULL DEFAULT 'active',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -75,12 +71,8 @@ async function createOvertimeTables() {
     );
   `);
 
-  await query('ALTER TABLE employees ADD COLUMN IF NOT EXISTS first_name TEXT;');
-  await query('ALTER TABLE employees ADD COLUMN IF NOT EXISTS middle_name TEXT;');
-  await query('ALTER TABLE employees ADD COLUMN IF NOT EXISTS last_name TEXT;');
   await query("ALTER TABLE employees ADD COLUMN IF NOT EXISTS shift TEXT NOT NULL DEFAULT 'day';");
   await query('ALTER TABLE employees ADD COLUMN IF NOT EXISTS daily_rate NUMERIC(12, 2);');
-  await query('ALTER TABLE employees ADD COLUMN IF NOT EXISTS is_department_leader BOOLEAN NOT NULL DEFAULT false;');
   await query(`
     UPDATE employees
     SET shift = 'day'
@@ -114,28 +106,43 @@ async function createOvertimeTables() {
         SELECT 1
         FROM information_schema.columns
         WHERE table_name = 'employees'
-          AND column_name = 'full_name'
+          AND column_name = 'first_name'
+      ) AND EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'employees'
+          AND column_name = 'middle_name'
+      ) AND EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'employees'
+          AND column_name = 'last_name'
       ) THEN
-        UPDATE employees
-        SET first_name = COALESCE(NULLIF(first_name, ''), split_part(full_name, ' ', 1), 'Employee'),
-            last_name = COALESCE(NULLIF(last_name, ''), NULLIF(regexp_replace(full_name, '^.*\\s+', ''), ''), split_part(full_name, ' ', 1), 'Employee')
-        WHERE first_name IS NULL
-           OR last_name IS NULL;
+        UPDATE users AS u
+        SET first_name = CASE
+              WHEN NULLIF(e.first_name, '') IS NOT NULL
+                   AND (u.first_name IS NULL OR u.first_name = '' OR u.first_name IN ('User', 'Employee'))
+                THEN e.first_name
+              ELSE u.first_name
+            END,
+            middle_name = CASE
+              WHEN NULLIF(e.middle_name, '') IS NOT NULL
+                   AND (u.middle_name IS NULL OR u.middle_name = '')
+                THEN e.middle_name
+              ELSE u.middle_name
+            END,
+            last_name = CASE
+              WHEN NULLIF(e.last_name, '') IS NOT NULL
+                   AND (u.last_name IS NULL OR u.last_name = '' OR u.last_name IN ('User', 'Employee'))
+                THEN e.last_name
+              ELSE u.last_name
+            END,
+            updated_at = NOW()
+        FROM employees AS e
+        WHERE u.id = e.user_id;
       END IF;
     END $$;
   `);
-  await query(`
-    UPDATE employees
-    SET first_name = 'Employee'
-    WHERE first_name IS NULL OR first_name = '';
-  `);
-  await query(`
-    UPDATE employees
-    SET last_name = first_name
-    WHERE last_name IS NULL OR last_name = '';
-  `);
-  await query('ALTER TABLE employees ALTER COLUMN first_name SET NOT NULL;');
-  await query('ALTER TABLE employees ALTER COLUMN last_name SET NOT NULL;');
   await query('ALTER TABLE employees ALTER COLUMN daily_rate SET NOT NULL;');
   await query(`
     DO $$
@@ -150,8 +157,12 @@ async function createOvertimeTables() {
       END IF;
     END $$;
   `);
+  await query('ALTER TABLE employees DROP COLUMN IF EXISTS first_name;');
+  await query('ALTER TABLE employees DROP COLUMN IF EXISTS middle_name;');
+  await query('ALTER TABLE employees DROP COLUMN IF EXISTS last_name;');
   await query('ALTER TABLE employees DROP COLUMN IF EXISTS full_name;');
   await query('ALTER TABLE employees DROP COLUMN IF EXISTS hourly_rate;');
+  await query('ALTER TABLE employees DROP COLUMN IF EXISTS is_department_leader;');
 
   await query(`
     CREATE TABLE IF NOT EXISTS overtime_policies (
@@ -169,14 +180,119 @@ async function createOvertimeTables() {
     );
   `);
 
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS overtime_plans (
+      plan_id TEXT PRIMARY KEY,
+      department_id TEXT NOT NULL REFERENCES departments(department_id) ON DELETE RESTRICT,
+      period_type TEXT NOT NULL,
+      period_start_date DATE NOT NULL,
+      period_end_date DATE NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      submitted_by TEXT REFERENCES users(id) ON DELETE RESTRICT,
+      submitted_at TIMESTAMPTZ,
+      approved_by TEXT REFERENCES users(id) ON DELETE RESTRICT,
+      approved_at TIMESTAMPTZ,
+      rejected_by TEXT REFERENCES users(id) ON DELETE RESTRICT,
+      rejected_at TIMESTAMPTZ,
+      closed_by TEXT REFERENCES users(id) ON DELETE RESTRICT,
+      closed_at TIMESTAMPTZ,
+      remarks TEXT,
+      rejection_reason TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT overtime_plans_period_type_check CHECK (period_type IN ('weekly', 'monthly')),
+      CONSTRAINT overtime_plans_status_check CHECK (status IN ('draft', 'submitted', 'approved', 'rejected', 'closed')),
+      CONSTRAINT overtime_plans_date_range_check CHECK (period_start_date <= period_end_date)
+    );
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS overtime_plan_items (
+      plan_item_id TEXT PRIMARY KEY,
+      plan_id TEXT NOT NULL REFERENCES overtime_plans(plan_id) ON DELETE CASCADE,
+      employee_id TEXT NOT NULL REFERENCES employees(employee_id) ON DELETE RESTRICT,
+      planned_date DATE NOT NULL,
+      planned_hours NUMERIC(6, 2) NOT NULL,
+      reason TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT overtime_plan_items_hours_check CHECK (planned_hours > 0)
+    );
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS overtime_plan_logs (
+      log_id TEXT PRIMARY KEY,
+      plan_id TEXT NOT NULL REFERENCES overtime_plans(plan_id) ON DELETE CASCADE,
+      action TEXT NOT NULL,
+      action_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      action_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      remarks TEXT
+    );
+  `);
+
+  await query('ALTER TABLE overtime_plans ADD COLUMN IF NOT EXISTS rejection_reason TEXT;');
+  await query('ALTER TABLE overtime_plans ADD COLUMN IF NOT EXISTS closed_by TEXT REFERENCES users(id) ON DELETE RESTRICT;');
+  await query('ALTER TABLE overtime_plans ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;');
+
+  await query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'overtime_plans_period_type_check'
+      ) THEN
+        ALTER TABLE overtime_plans DROP CONSTRAINT overtime_plans_period_type_check;
+      END IF;
+    END $$;
+  `);
+  await query(`
+    ALTER TABLE overtime_plans
+    ADD CONSTRAINT overtime_plans_period_type_check
+    CHECK (period_type IN ('weekly', 'monthly'));
+  `);
+
+  await query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'overtime_plans_status_check'
+      ) THEN
+        ALTER TABLE overtime_plans DROP CONSTRAINT overtime_plans_status_check;
+      END IF;
+    END $$;
+  `);
+  await query(`
+    ALTER TABLE overtime_plans
+    ADD CONSTRAINT overtime_plans_status_check
+    CHECK (status IN ('draft', 'submitted', 'approved', 'rejected', 'closed'));
+  `);
+
+  await query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'overtime_plans_date_range_check'
+      ) THEN
+        ALTER TABLE overtime_plans
+        ADD CONSTRAINT overtime_plans_date_range_check
+        CHECK (period_start_date <= period_end_date);
+      END IF;
+    END $$;
+  `);
+
   await query(`
     CREATE TABLE IF NOT EXISTS overtime_requests (
       overtime_id TEXT PRIMARY KEY,
       employee_id TEXT NOT NULL REFERENCES employees(employee_id) ON DELETE RESTRICT,
       date DATE NOT NULL,
-      start_time TIME NOT NULL,
-      end_time TIME NOT NULL,
-      break_minutes INTEGER NOT NULL DEFAULT 0,
       total_hours NUMERIC(6, 2) NOT NULL DEFAULT 0,
       reason TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending',
@@ -193,9 +309,31 @@ async function createOvertimeTables() {
       overtime_pay NUMERIC(12, 2),
       remarks TEXT,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      CONSTRAINT overtime_requests_status_check CHECK (status IN ('pending', 'approved', 'rejected', 'paid'))
+      CONSTRAINT overtime_requests_status_check CHECK (status IN ('pending', 'approved', 'rejected', 'paid', 'cancelled'))
     );
   `);
+
+  await query('ALTER TABLE overtime_requests ADD COLUMN IF NOT EXISTS total_hours NUMERIC(6, 2) NOT NULL DEFAULT 0;');
+  await query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'overtime_requests_status_check'
+      ) THEN
+        ALTER TABLE overtime_requests DROP CONSTRAINT overtime_requests_status_check;
+      END IF;
+    END $$;
+  `);
+  await query(`
+    ALTER TABLE overtime_requests
+    ADD CONSTRAINT overtime_requests_status_check
+    CHECK (status IN ('pending', 'approved', 'rejected', 'paid', 'cancelled'));
+  `);
+  await query('ALTER TABLE overtime_requests DROP COLUMN IF EXISTS start_time;');
+  await query('ALTER TABLE overtime_requests DROP COLUMN IF EXISTS end_time;');
+  await query('ALTER TABLE overtime_requests DROP COLUMN IF EXISTS break_minutes;');
 
   await query(`
     CREATE TABLE IF NOT EXISTS approval_logs (
@@ -218,6 +356,16 @@ async function createOvertimeTables() {
   await query('CREATE INDEX IF NOT EXISTS overtime_requests_employee_id_idx ON overtime_requests (employee_id);');
   await query('CREATE INDEX IF NOT EXISTS overtime_requests_submitted_by_idx ON overtime_requests (submitted_by);');
   await query('CREATE INDEX IF NOT EXISTS approval_logs_overtime_id_idx ON approval_logs (overtime_id);');
+  await query('CREATE INDEX IF NOT EXISTS overtime_plans_department_id_idx ON overtime_plans (department_id);');
+  await query('CREATE INDEX IF NOT EXISTS overtime_plans_status_idx ON overtime_plans (status);');
+  await query('CREATE INDEX IF NOT EXISTS overtime_plans_period_idx ON overtime_plans (period_start_date, period_end_date);');
+  await query('CREATE INDEX IF NOT EXISTS overtime_plan_items_plan_id_idx ON overtime_plan_items (plan_id);');
+  await query('CREATE INDEX IF NOT EXISTS overtime_plan_items_employee_id_idx ON overtime_plan_items (employee_id);');
+  await query('CREATE INDEX IF NOT EXISTS overtime_plan_logs_plan_id_idx ON overtime_plan_logs (plan_id);');
+  await query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS overtime_plan_items_unique_employee_date_idx
+    ON overtime_plan_items (plan_id, employee_id, planned_date);
+  `);
 
   for (const department of companyDepartments) {
     await query(
